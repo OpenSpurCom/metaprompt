@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<!--
+  SINGLE PANEL — LiveView blueprint
+  LiveView assigns needed:
+    @threads        — list of %Thread{id, title}
+    @active_thread  — %Thread{} currently shown in the panel
+    @messages       — list of %Message{role, content} for active thread
+    @streaming      — boolean, true while LLM response is in progress
+-->
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chat</title>
+
+  <link id="hl-dark"  rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark-dimmed.min.css">
+  <link id="hl-light" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" disabled>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #0c0c0c;
+      --surface:     #151515;
+      --border:      #252525;
+      --text:        #e2e2e2;
+      --muted:       #5e5e5e;
+      --user-bg:     #16203a;
+      --user-border: #1e3565;
+      --input-bg:    #141414;
+      --btn-bg:      #1c1c1c;
+      --btn-hover:   #272727;
+      --send-bg:     #5b9bff;
+      --send-text:   #090909;
+      --scrollbar:   #2e2e2e;
+      --scrollbar-h: #444;
+      --accent:      #5b9bff;
+    }
+    [data-theme="light"] {
+      --bg:          #ffffff;
+      --surface:     #f6f8fa;
+      --border:      #e5e7eb;
+      --text:        #111827;
+      --muted:       #9ca3af;
+      --user-bg:     #eff6ff;
+      --user-border: #bfdbfe;
+      --input-bg:    #ffffff;
+      --btn-bg:      #f3f4f6;
+      --btn-hover:   #e5e7eb;
+      --send-bg:     #2563eb;
+      --send-text:   #ffffff;
+      --scrollbar:   #d1d5db;
+      --scrollbar-h: #9ca3af;
+      --accent:      #2563eb;
+    }
+
+    html, body {
+      height: 100%;
+      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      font-size: 15px;
+      line-height: 1.65;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    #app { display: flex; flex-direction: column; height: 100vh; }
+
+#theme-btn {
+      all: unset;
+      cursor: pointer;
+      color: var(--muted);
+      width: 24px; height: 24px;
+      border-radius: 5px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.15s, background 0.15s;
+    }
+    #theme-btn:hover { color: var(--text); background: var(--btn-hover); }
+
+    /* Workspace */
+    #workspace { display: flex; flex: 1; overflow: hidden; }
+
+    /* Sidebar */
+    #sidebar {
+      width: 190px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+      background: var(--bg);
+    }
+    .sidebar-label {
+      padding: 0.75rem 1rem 0.35rem;
+      font-size: 0.6875rem;
+      font-weight: 700;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    #thread-list { flex: 1; overflow-y: auto; padding: 0.25rem 0.5rem; }
+    #thread-list::-webkit-scrollbar { width: 4px; }
+    #thread-list::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 2px; }
+
+    .thread-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.375rem 0.625rem;
+      border-radius: 6px;
+      font-size: 0.8125rem;
+      color: var(--text);
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      user-select: none;
+      transition: background 0.1s;
+    }
+    .thread-item:hover { background: var(--btn-hover); }
+    .thread-item-label { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+
+    /* Panels area */
+    #panels-area { display: flex; flex: 1; overflow: hidden; }
+
+    /* Panel */
+    .panel {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      border-top: 3px solid var(--accent);  /* always active in single layout */
+    }
+    .panel-header {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 0.75rem;
+      height: 36px;
+      border-bottom: 1px solid var(--border);
+      gap: 0.5rem;
+    }
+    .panel-title {
+      font-size: 0.8125rem;
+      font-weight: 500;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1;
+    }
+    .panel-actions { display: flex; align-items: center; gap: 2px; }
+.panel-body { flex: 1; position: relative; overflow: hidden; }
+    .messages {
+      position: absolute;
+      inset: 0;
+      overflow-y: auto;
+      padding: 1.75rem 1.25rem 3rem;
+    }
+    .messages::-webkit-scrollbar       { width: 5px; }
+    .messages::-webkit-scrollbar-track { background: transparent; }
+    .messages::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 10px; }
+    .messages::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-h); }
+
+    /* Messages */
+    .msg { margin-bottom: 1.875rem; }
+    .msg:last-child { margin-bottom: 0; }
+
+    .msg-user { display: flex; justify-content: flex-end; }
+    .msg-user .body {
+      background: var(--user-bg);
+      border: 1px solid var(--user-border);
+      border-radius: 0;
+      padding: 0.6rem 1rem;
+      max-width: 74%;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.9375rem;
+      line-height: 1.55;
+    }
+    .msg-assistant .body { font-size: 0.9375rem; line-height: 1.72; }
+
+    /* Markdown */
+    .body h1,.body h2,.body h3,.body h4,.body h5,.body h6 { margin: 1.25em 0 0.45em; font-weight: 600; line-height: 1.3; }
+    .body :is(h1,h2,h3,h4,h5,h6):first-child { margin-top: 0; }
+    .body h1{font-size:1.5em} .body h2{font-size:1.25em} .body h3{font-size:1.1em}
+    .body p { margin-bottom: 0.8em; } .body p:last-child { margin-bottom: 0; }
+    .body ul,.body ol { padding-left: 1.6em; margin-bottom: 0.8em; }
+    .body li { margin-bottom: 0.25em; }
+    .body :not(pre)>code {
+      font-family: 'Cascadia Code','Fira Code','JetBrains Mono','SF Mono',Consolas,monospace;
+      font-size: 0.875em; background: var(--surface);
+      border: 1px solid var(--border); padding: 0.15em 0.4em; border-radius: 4px;
+    }
+    .body pre { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 0.8em; }
+    .body pre code {
+      background: none; border: none; padding: 1rem 1.125rem;
+      display: block; font-size: 0.85em; line-height: 1.6;
+      font-family: 'Cascadia Code','Fira Code','JetBrains Mono','SF Mono',Consolas,monospace;
+      overflow-x: auto;
+    }
+    .body blockquote { border-left: 3px solid var(--accent); padding-left: 1em; color: var(--muted); margin: 0 0 0.8em; }
+    .body a { color: var(--accent); text-decoration: none; }
+    .body a:hover { text-decoration: underline; }
+    .body hr { border: none; border-top: 1px solid var(--border); margin: 1.25em 0; }
+    .body table { width: 100%; border-collapse: collapse; margin-bottom: 0.8em; font-size: 0.9em; }
+    .body th,.body td { border: 1px solid var(--border); padding: 0.45em 0.75em; text-align: left; }
+    .body th { background: var(--surface); font-weight: 600; }
+    .body img { max-width: 100%; border-radius: 6px; }
+
+
+    /* Scroll-to-bottom */
+    .scroll-btn {
+      position: absolute; bottom: 1rem; right: 1rem;
+      width: 32px; height: 32px; border-radius: 50%;
+      background: var(--btn-bg); border: 1px solid var(--border);
+      color: var(--muted); cursor: pointer;
+      display: none; align-items: center; justify-content: center;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+      transition: background 0.15s, color 0.15s; z-index: 5;
+    }
+    .scroll-btn:hover { background: var(--btn-hover); color: var(--text); }
+    .scroll-btn.show  { display: flex; }
+
+    /* Input */
+    footer {
+      flex-shrink: 0;
+      padding: 0.75rem 1.25rem 1rem;
+      border-top: 1px solid var(--border);
+      background: var(--bg);
+    }
+    #input-wrap {
+      display: flex; align-items: flex-end; gap: 8px;
+      background: var(--input-bg);
+      border: 1.5px solid var(--accent);
+      border-radius: 14px; padding: 8px 8px 8px 14px;
+    }
+    #input {
+      flex: 1; background: transparent; border: none; outline: none;
+      color: var(--text); font-family: inherit;
+      font-size: 0.9375rem; line-height: 1.55;
+      resize: none; min-height: 24px; max-height: 200px; overflow-y: auto;
+    }
+    #input::placeholder { color: var(--muted); }
+    #input::-webkit-scrollbar { width: 4px; }
+    #input::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 2px; }
+    #send-btn {
+      all: unset; cursor: pointer;
+      background: var(--send-bg); color: var(--send-text);
+      width: 30px; height: 30px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    #send-btn:hover { opacity: 0.85; transform: scale(1.05); }
+  </style>
+</head>
+<body>
+  <div id="app">
+
+    <div id="workspace">
+
+      <!-- SIDEBAR ─────────────────────────────────────────── -->
+      <nav id="sidebar">
+        <div class="sidebar-label">Threads</div>
+
+        <div id="thread-list">
+          <!--
+            LiveView: for thread <- @threads do
+              active = thread.id == @active_thread.id
+          -->
+
+          <div class="thread-item"
+               phx-click="load_thread" phx-value-id="1">
+            <span class="thread-item-label">Thread 1</span>
+          </div>
+
+          <div class="thread-item"
+               phx-click="load_thread" phx-value-id="2">
+            <span class="thread-item-label">Thread 2</span>
+          </div>
+
+          <div class="thread-item"
+               phx-click="load_thread" phx-value-id="3">
+            <span class="thread-item-label">Thread 3</span>
+          </div>
+
+          <!-- end -->
+        </div>
+
+
+      </nav>
+
+      <!-- PANELS ──────────────────────────────────────────── -->
+      <div id="panels-area">
+
+        <!--
+          Single panel — always active.
+          LiveView: phx-click="activate_panel" not needed (only one panel).
+        -->
+        <div class="panel" id="panel-main">
+          <div class="panel-header">
+            <!-- {@active_thread.title} -->
+            <span class="panel-title">Thread 1</span>
+            <div class="panel-actions">
+              <!-- phx-click="toggle_theme" -->
+              <button id="theme-btn" aria-label="Toggle theme">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="panel-body">
+            <!--
+              phx-hook="ScrollManager"
+              phx-update="stream"
+              id must be stable for LiveView streams
+            -->
+            <div class="messages" id="messages-main"
+                 phx-hook="ScrollManager">
+
+              <!--
+                LiveView: for message <- @streams.messages do
+                  role = message.role  ("user" | "assistant")
+              -->
+
+              <div class="msg msg-user">
+                <div class="body">What is the capital of France?</div>
+              </div>
+
+              <div class="msg msg-assistant">
+                <!-- phx-hook="MarkdownRenderer" or pre-rendered HTML from server -->
+                <div class="body">
+                  The capital of France is <strong>Paris</strong>. It has been the country's capital since the 10th century and is home to landmarks such as the Eiffel Tower and the Louvre.
+                </div>
+              </div>
+
+              <div class="msg msg-user">
+                <div class="body">How many people live there?</div>
+              </div>
+
+              <!--
+                Streaming assistant message:
+                  .streaming class present while @streaming == true
+                  phx-hook="StreamReceiver" listens for push_event("token", %{text: t})
+              -->
+              <div class="msg msg-assistant">
+                <div class="body streaming" id="stream-target" phx-hook="StreamReceiver">
+                  Paris has a city population of approximately 2.1 million
+                </div>
+              </div>
+
+              <!-- end -->
+            </div>
+
+            <button class="scroll-btn" aria-label="Scroll to bottom">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+      </div><!-- /panels-area -->
+    </div><!-- /workspace -->
+
+    <!-- INPUT ───────────────────────────────────────────────
+      LiveView: <.form phx-submit="send_message">
+      disabled={@streaming}
+    -->
+    <footer>
+      <div id="input-wrap">
+        <textarea id="input" rows="1" placeholder="Message…"
+                  name="message"
+                  phx-hook="AutoResize"></textarea>
+        <button id="send-btn" aria-label="Send">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+          </svg>
+        </button>
+      </div>
+    </footer>
+
+  </div><!-- /app -->
+
+  <script>
+    // ── Hooks (stubs — implemented in app.js) ──────────────────
+    //
+    // ScrollManager   — tracks pinned state, shows/hides scroll-btn
+    // StreamReceiver  — handles push_event("token", %{text}) → appends text,
+    //                   then on push_event("stream_done") → renders markdown
+    // AutoResize      — grows textarea up to 200px
+    //
+    // Everything else (threads, history, panel state) lives on the server.
+
+    // ── Theme toggle (stays client-side) ──────────────────────
+    const themeBtn = document.getElementById('theme-btn');
+    let dark = true;
+    themeBtn.addEventListener('click', () => {
+      dark = !dark;
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      document.getElementById('hl-dark').disabled  = !dark;
+      document.getElementById('hl-light').disabled = dark;
+    });
+
+    // ── AutoResize (stays client-side) ────────────────────────
+    const inputEl = document.getElementById('input');
+    inputEl.addEventListener('input', () => {
+      inputEl.style.height = 'auto';
+      inputEl.style.height = Math.min(inputEl.scrollHeight, 200) + 'px';
+    });
+
+    // ── ScrollManager (stays client-side) ─────────────────────
+    const messagesEl = document.getElementById('messages-main');
+    const scrollBtn  = document.querySelector('.scroll-btn');
+    let pinned = true;
+    messagesEl.addEventListener('scroll', () => {
+      const { scrollTop, scrollHeight, clientHeight } = messagesEl;
+      pinned = scrollHeight - scrollTop - clientHeight < 80;
+      scrollBtn.classList.toggle('show', !pinned);
+    }, { passive: true });
+    scrollBtn.addEventListener('click', () =>
+      messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' })
+    );
+
+    // ── StreamReceiver stub ────────────────────────────────────
+    // In LiveView this is a Hook. Pseudocode:
+    //
+    // StreamReceiver = {
+    //   mounted() {
+    //     this.rawText = "";
+    //     this.handleEvent("token", ({ text }) => {
+    //       this.rawText += text;
+    //       this.el.textContent = this.rawText;
+    //       if (pinned) messagesEl.scrollTop = messagesEl.scrollHeight;
+    //     });
+    //     this.handleEvent("stream_done", () => {
+    //       this.el.innerHTML = marked.parse(this.rawText);
+    //       this.el.classList.remove("streaming");
+    //       this.el.querySelectorAll("pre code").forEach(b => hljs.highlightElement(b));
+    //     });
+    //   }
+    // }
+  </script>
+</body>
+</html>
