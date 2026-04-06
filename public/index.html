@@ -257,6 +257,46 @@
       transition: opacity 0.15s, transform 0.1s;
     }
     #send-btn:hover { opacity: 0.85; transform: scale(1.05); }
+
+    /* Overlay */
+    #overlay {
+      display: none;
+      position: fixed; inset: 0; z-index: 100;
+      background: rgba(0,0,0,0.55);
+      backdrop-filter: blur(2px);
+      align-items: flex-end; justify-content: center;
+      padding-bottom: 5.5rem;
+    }
+    #overlay.show { display: flex; }
+    #overlay-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem 1.5rem;
+      min-width: 260px;
+      display: flex; flex-direction: column; gap: 0.75rem;
+    }
+    #overlay-label {
+      font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.09em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .overlay-step {
+      display: flex; align-items: center; gap: 0.6rem;
+      font-size: 0.875rem; color: var(--muted);
+      transition: color 0.2s;
+    }
+    .overlay-step.active { color: var(--text); }
+    .overlay-step.done   { color: var(--muted); }
+    .overlay-step .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--border); flex-shrink: 0;
+      transition: background 0.2s;
+    }
+    .overlay-step.active .dot { background: var(--accent); animation: pulse 1s infinite; }
+    .overlay-step.done   .dot { background: var(--muted); }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; } 50% { opacity: 0.3; }
+    }
   </style>
 </head>
 <body>
@@ -308,6 +348,13 @@
 
   </div><!-- /app -->
 
+  <div id="overlay">
+    <div id="overlay-card">
+      <div id="overlay-label">Working…</div>
+      <div id="overlay-steps"></div>
+    </div>
+  </div>
+
   <script>
     // ── State ──────────────────────────────────────────────────
     let chats = [];
@@ -323,6 +370,27 @@
     const sendBtn      = document.getElementById('send-btn');
     const scrollBtn    = document.querySelector('.scroll-btn');
     const themeBtn     = document.getElementById('theme-btn');
+
+    // ── Send / Stop button ─────────────────────────────────────
+    const SEND_ICON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>`;
+    const STOP_ICON = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>`;
+    let _stopCallback = null;
+
+    function setSendMode(mode, cb) {
+      if (mode === 'stop') {
+        sendBtn.innerHTML = STOP_ICON;
+        sendBtn.style.background = 'var(--muted)';
+        _stopCallback = cb || null;
+      } else {
+        sendBtn.innerHTML = SEND_ICON;
+        sendBtn.style.removeProperty('background');
+        _stopCallback = null;
+      }
+    }
+
+    sendBtn.addEventListener('click', () => {
+      if (_stopCallback) { _stopCallback(); } else { sendMessage(); }
+    });
 
     // ── Theme ──────────────────────────────────────────────────
     let dark = true;
@@ -396,6 +464,107 @@
       if (pinned) messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
+    // ── Overlay ────────────────────────────────────────────────
+    const overlayEl      = document.getElementById('overlay');
+    const overlayStepsEl = document.getElementById('overlay-steps');
+
+    // Step labels per mode (order mirrors actual pipeline execution)
+    const STEP_LABELS = {
+      meta: {
+        classify:          'Classifying request',
+        resolve_context:   'Resolving context',
+        extract_target:    'Planning & generating content',
+        generate_mutation: 'Executing mutation',
+      },
+      meta_aicontext: {
+        classify:          'Classifying request',
+        resolve_context:   'Selecting context from conversation',
+        extract_target:    'Planning & generating content',
+        generate_mutation: 'Executing mutation',
+      },
+    };
+
+    let _overlayMode = null;
+    let _overlayActive = null; // currently active step name
+
+    function showOverlay(mode) {
+      _overlayMode = mode;
+      _overlayActive = null;
+      overlayStepsEl.innerHTML = '';
+      overlayEl.classList.add('show');
+    }
+
+    // Called with each { type:'step', name } event from the server.
+    // Marks the previous step done and activates the new one.
+    function advanceOverlay(name) {
+      const labels = STEP_LABELS[_overlayMode] || {};
+      const label = labels[name];
+      if (!label) return;
+
+      // Mark current active step as done
+      if (_overlayActive) {
+        const prev = overlayStepsEl.querySelector(`.overlay-step[data-name="${_overlayActive}"]`);
+        if (prev) { prev.classList.remove('active'); prev.classList.add('done'); }
+      }
+
+      // Create new step element if not already there, then activate it
+      let el = overlayStepsEl.querySelector(`.overlay-step[data-name="${name}"]`);
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'overlay-step';
+        el.dataset.name = name;
+        el.innerHTML = `<span class="dot"></span><span>${label}</span>`;
+        overlayStepsEl.appendChild(el);
+      }
+      el.classList.add('active');
+      _overlayActive = name;
+    }
+
+    function hideOverlay() {
+      // Mark last active step done before hiding
+      if (_overlayActive) {
+        const el = overlayStepsEl.querySelector(`.overlay-step[data-name="${_overlayActive}"]`);
+        if (el) { el.classList.remove('active'); el.classList.add('done'); }
+      }
+      overlayEl.classList.remove('show');
+      overlayStepsEl.innerHTML = '';
+      _overlayMode = null;
+      _overlayActive = null;
+    }
+
+    function detectMode(text) {
+      const t = text.trim();
+      const hasMeta       = t.startsWith('/meta');
+      const hasAiContext  = t.includes('/aicontext');
+      if (hasMeta && hasAiContext) return 'meta_aicontext';
+      if (hasMeta)      return 'meta';
+      if (hasAiContext) return 'aicontext';
+      return null;
+    }
+
+    // ── Optimistic message helpers ─────────────────────────────
+    function appendUserMessage(text) {
+      const wrap = document.createElement('div');
+      wrap.className = 'msg msg-user';
+      const body = document.createElement('div');
+      body.className = 'body';
+      body.textContent = text;
+      wrap.appendChild(body);
+      messagesEl.appendChild(wrap);
+      if (pinned) messagesEl.scrollTop = messagesEl.scrollHeight;
+      return wrap;
+    }
+
+    function appendStreamingMessage() {
+      const wrap = document.createElement('div');
+      wrap.className = 'msg msg-assistant';
+      const body = document.createElement('div');
+      body.className = 'body';
+      wrap.appendChild(body);
+      messagesEl.appendChild(wrap);
+      return body;
+    }
+
     // ── API ────────────────────────────────────────────────────
     async function loadState() {
       const res = await fetch('/api/state');
@@ -408,47 +577,142 @@
     }
 
     async function sendMessage() {
-      const userRequest = inputEl.value.trim();
-      if (!userRequest || busy) return;
+      const raw = inputEl.value.trim();
+      if (!raw || busy) return;
 
+      const mode = detectMode(raw);
+      const isMeta = mode === 'meta' || mode === 'meta_aicontext';
       const prevThreadIds = new Set(threads.map(t => t.th_id));
 
       busy = true;
+      inputEl.value = '';
+      inputEl.style.height = 'auto';
       inputEl.disabled = true;
-      sendBtn.disabled = true;
 
-      try {
-        const res = await fetch('/api/operate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userRequest, activeThreadId }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || res.statusText);
+      if (isMeta) {
+        // ── Meta pipeline — SSE with step events ──────────────
+        sendBtn.disabled = true;
+        showOverlay(mode);
+        try {
+          const res = await fetch('/api/operate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userRequest: raw, activeThreadId }),
+          });
 
-        chats = data.chats;
-        threads = data.threads;
+          const reader = res.body.getReader();
+          const dec = new TextDecoder();
+          let buf = '';
 
-        // Switch to newly created thread if any
-        const newThread = threads.find(t => !prevThreadIds.has(t.th_id));
-        if (newThread) activeThreadId = newThread.th_id;
+          outer: while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            let pos;
+            while ((pos = buf.indexOf('\n\n')) !== -1) {
+              const line = buf.slice(0, pos).trim();
+              buf = buf.slice(pos + 2);
+              if (!line.startsWith('data: ')) continue;
+              const payload = JSON.parse(line.slice(6));
+              if (payload.type === 'step') {
+                advanceOverlay(payload.name);
+              } else if (payload.type === 'done') {
+                chats = payload.chats;
+                threads = payload.threads;
+                const newThread = threads.find(t => !prevThreadIds.has(t.th_id));
+                if (newThread) activeThreadId = newThread.th_id;
+                renderThreads();
+                renderMessages();
+                break outer;
+              } else if (payload.type === 'error') {
+                throw new Error(payload.message);
+              }
+            }
+          }
+        } catch (err) {
+          alert('Error: ' + err.message);
+        } finally {
+          busy = false;
+          inputEl.disabled = false;
+          sendBtn.disabled = false;
+          hideOverlay();
+          inputEl.focus();
+        }
+      } else {
+        // ── Normal mode — streaming SSE ────────────────────────
+        appendUserMessage(raw);
+        const liveBody = appendStreamingMessage();
+        const abortCtrl = new AbortController();
+        setSendMode('stop', () => abortCtrl.abort());
 
-        inputEl.value = '';
-        inputEl.style.height = 'auto';
-        renderThreads();
-        renderMessages();
-      } catch (err) {
-        alert('Error: ' + err.message);
-      } finally {
-        busy = false;
-        inputEl.disabled = false;
-        sendBtn.disabled = false;
-        inputEl.focus();
+        let accum = '';
+        try {
+          const res = await fetch('/api/operate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userRequest: raw, activeThreadId }),
+            signal: abortCtrl.signal,
+          });
+          if (!res.ok) {
+            const errData = await res.json();
+            throw new Error(errData.error || res.statusText);
+          }
+
+          const reader = res.body.getReader();
+          const dec = new TextDecoder();
+          let buf = '';
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            let pos;
+            while ((pos = buf.indexOf('\n\n')) !== -1) {
+              const line = buf.slice(0, pos).trim();
+              buf = buf.slice(pos + 2);
+              if (!line.startsWith('data: ')) continue;
+              const payload = JSON.parse(line.slice(6));
+              if (payload.token) {
+                accum += payload.token;
+                liveBody.textContent = accum;
+                if (pinned) messagesEl.scrollTop = messagesEl.scrollHeight;
+              } else if (payload.done) {
+                chats = payload.chats;
+                threads = payload.threads;
+                const newThread = threads.find(t => !prevThreadIds.has(t.th_id));
+                if (newThread) activeThreadId = newThread.th_id;
+                renderThreads();
+                renderMessages();
+              } else if (payload.error) {
+                throw new Error(payload.error);
+              }
+            }
+          }
+        } catch (err) {
+          if (err.name === 'AbortError') {
+            // User stopped — finalize whatever arrived
+            if (accum) {
+              liveBody.innerHTML = marked.parse(accum);
+              liveBody.querySelectorAll('pre code').forEach(b => hljs.highlightElement(b));
+            } else {
+              liveBody.closest('.msg')?.remove();
+              renderMessages(); // removes optimistic user msg too (not in state)
+            }
+          } else {
+            alert('Error: ' + err.message);
+            liveBody.closest('.msg')?.remove();
+            renderMessages();
+          }
+        } finally {
+          busy = false;
+          inputEl.disabled = false;
+          setSendMode('send');
+          inputEl.focus();
+        }
       }
     }
 
     // ── Input handlers ─────────────────────────────────────────
-    sendBtn.addEventListener('click', sendMessage);
     inputEl.addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
     });
